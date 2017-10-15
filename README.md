@@ -1,4 +1,4 @@
-## Relativity Space - Candidate Homework 1
+## Relativity Space - Candidate Homework
 This readme contains problems that candidates can choose to work on as a take-home assignment
 
 ### Instructions:
@@ -29,7 +29,7 @@ Your program is required to do following:
 3. Detect welder on/off events
 4. Detect motion stopping
 
-Optional: If you feel like as super star you can work on any of the following as well:
+Optional: If you feel like a super star you can work on any of the following as well:
 1. Detect spatter
 2. Inclination of the weld path (in frame)
 3. Length of the wire between tip and weld pool
