@@ -1,5 +1,5 @@
-## Relativity Space - Candidate Homework
-This readme contains problems that candidates can choose to work on as a take-home assignment
+## Relativity Space - Candidate Project
+This readme contains problems that candidates can choose to work on as a take-home project
 
 ### Instructions:
 1. Fork this repo
