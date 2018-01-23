@@ -282,6 +282,7 @@ def videoAnalysis(previous, current, clt):
            "welderOffEvent" : welderOffEvent,\
            "frameShiftEvent" : frameShiftEvent,\
            "welderStopEvent" : welderStopEvent}
+    return res
 
 
 def main():

@@ -44,27 +44,6 @@ def draw_flow(img, flow, trailAvg,  step=16):
     return vis, trailAvg
 
 
-def draw_hsv(flow):
-    h, w = flow.shape[:2]
-    fx, fy = flow[:,:,0], flow[:,:,1]
-    ang = np.arctan2(fy, fx) + np.pi
-    v = np.sqrt(fx*fx+fy*fy)
-    hsv = np.zeros((h, w, 3), np.uint8)
-    hsv[...,0] = ang*(180/np.pi/2)
-    hsv[...,1] = 255
-    hsv[...,2] = np.minimum(v*4, 255)
-    bgr = cv.cvtColor(hsv, cv.COLOR_HSV2BGR)
-    return bgr
-
-
-def warp_flow(img, flow):
-    h, w = flow.shape[:2]
-    flow = -flow
-    flow[:,:,0] += np.arange(w)
-    flow[:,:,1] += np.arange(h)[:,np.newaxis]
-    res = cv.remap(img, flow, None, cv.INTER_LINEAR)
-    return res
-
 if __name__ == '__main__':
     optMinX = 0
     optMaxX = 700
@@ -92,21 +71,8 @@ if __name__ == '__main__':
         vis, trailAvg = draw_flow(gray, flow, trailAvg)
         print(vis.shape)
         cv.imshow('flow', np.hstack((vis, unProcessed)))
-        if show_hsv:
-            cv.imshow('flow HSV', draw_hsv(flow))
-        if show_glitch:
-            cur_glitch = warp_flow(cur_glitch, flow)
-            cv.imshow('glitch', cur_glitch)
 
         ch = cv.waitKey(5)
         if ch == 27:
             break
-        if ch == ord('1'):
-            show_hsv = not show_hsv
-            print('HSV flow visualization is', ['off', 'on'][show_hsv])
-        if ch == ord('2'):
-            show_glitch = not show_glitch
-            if show_glitch:
-                cur_glitch = img.copy()
-            print('glitch is', ['off', 'on'][show_glitch])
     cv.destroyAllWindows()

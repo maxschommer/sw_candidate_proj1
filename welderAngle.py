@@ -10,16 +10,6 @@ MIN_MATCH_COUNT = 5
 trailAvg = -30
 avgSize = 10
 
-def mse(imageA, imageB):
-    # the 'Mean Squared Error' between the two images is the
-    # sum of the squared difference between the two images;
-    # NOTE: the two images must have the same dimension
-    err = np.sum((imageA.astype("float") - imageB.astype("float")) ** 2)
-    err /= float(imageA.shape[0] * imageA.shape[1])
-
-    # return the MSE, the lower the error, the more "similar"
-    # the two images are
-    return err
 
 def detectLines(imageEdges):
     angleThreshold = .1
@@ -72,57 +62,7 @@ def detectLines(imageEdges):
     # written on a new image houghlines.jpg
     return imageEdges, welderAngle
 
-def siftMatch(targetImage):
-    # find the keypoints and descriptors with SIFT
-    sampleImage = cv2.imread('welderMask1.png',0)
 
-    kp1, des1 = sift.detectAndCompute(sampleImage,None)
-    kp2, des2 = sift.detectAndCompute(targetImage,None)
-
-    FLANN_INDEX_KDTREE = 0
-    index_params = dict(algorithm = FLANN_INDEX_KDTREE, trees = 5)
-    search_params = dict(checks = 50)
-
-    flann = cv2.FlannBasedMatcher(index_params, search_params)
-
-    matches = flann.knnMatch(des1,des2,k=2)
-
-    # store all the good matches as per Lowe's ratio test.
-    good = []
-    for m,n in matches:
-        if m.distance < 0.7*n.distance:
-            good.append(m)
-
-    if len(good)>MIN_MATCH_COUNT:
-        src_pts = np.float32([ kp1[m.queryIdx].pt for m in good ]).reshape(-1,1,2)
-        dst_pts = np.float32([ kp2[m.trainIdx].pt for m in good ]).reshape(-1,1,2)
-
-        M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC,5.0)
-        matchesMask = mask.ravel().tolist()
-
-        h,w = sampleImage.shape
-        pts = np.float32([ [0,0],[0,h-1],[w-1,h-1],[w-1,0] ]).reshape(-1,1,2)
-        dst = cv2.perspectiveTransform(pts,M)
-
-        targetImage = cv2.polylines(targetImage,[np.int32(dst)],True,255,3, cv2.LINE_AA)
-
-    else:
-        print "Not enough matches are found - %d/%d" % (len(good),MIN_MATCH_COUNT)
-        matchesMask = None
-
-    draw_params = dict(matchColor = (0,255,0), # draw matches in green color
-                   singlePointColor = None,
-                   matchesMask = matchesMask, # draw only inliers
-                   flags = 2)
-
-    img3 = cv2.drawMatches(sampleImage,kp1,targetImage,kp2,good,None,**draw_params)
-
-    plt.imshow(img3, 'gray'),plt.show()
-
-def sharpen(image):
-    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-    res = cv2.filter2D(image, -1, kernel)
-    return res
 
 def grayQuantize(image, numValues):
     # load the image and grab its width and height
@@ -157,21 +97,6 @@ def preProcess(image):
     # gray = sharpen(gray)
     return res
 
-def preProcessOptFlow(image):
-    res = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # print(res.mean())
-    res = cv2.equalizeHist(res)
-    # gray = sharpen(gray)
-    return res
-
-def analyzeFlow(img, flow, step=16):
-    global trailAvg
-    h, w = img.shape[:2]
-    y, x = np.mgrid[step/2:h:step, step/2:w:step].reshape(2,-1).astype(int)
-    fx, fy = flow[y,x].T
-    fxSort = np.sort(fx)
-    trailAvg = trailAvg * (avgSize - 1)/avgSize + np.mean(fxSort[0:10])/avgSize
-
 def videoAnalysis(previous, current, clt):
     optMinX = 0
     optMaxX = 700
@@ -185,32 +110,21 @@ def videoAnalysis(previous, current, clt):
 
     height,width, depth = np.shape(current)
 
-    prevOpt = preProcessOptFlow(previous[optMinY:optMaxY, optMinX:optMaxX])
-    currentOpt = preProcessOptFlow(current[optMinY:optMaxY, optMinX:optMaxX])
-    flow = cv2.calcOpticalFlowFarneback(prevOpt, currentOpt, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-    analyzeFlow(currentOpt, flow)
-    if trailAvg < 10:
-        welderStopEvent = True
+
 
     try:
         gray = preProcess(current)
         previous = preProcess(previous)
-
     except Exception as e:
         print("Error")
         return False
 
     grayCopy = gray.copy()
 
-
     kernel = np.ones((20,20),np.float32)/400
     gray = cv2.filter2D(gray,-1,kernel)
 
     next = gray
-
-    imgDiff = mse(previous, next)
-    if imgDiff > 350:
-        frameShiftEvent = True
 
     ret,thresh = cv2.threshold(gray, 140,255,cv2.THRESH_BINARY)
     threshcopy = thresh
@@ -239,24 +153,43 @@ def videoAnalysis(previous, current, clt):
         ellipse = cv2.fitEllipse(contours[0])
         beadLocation = np.asarray(ellipse[0])
 
+        welderRectangleCorner = beadLocation + np.asarray((ellipse[1][1]*0, 0))
+        welderRectangle = np.asarray((welderRectangleCorner, np.asarray((600, -200)) + welderRectangleCorner))
+        welderRectangle = welderRectangle.astype(np.int64)
+        welderRectangle = tuple(map(tuple, welderRectangle))
+
+        rect_img = np.zeros((height,width), np.uint8)
+        cv2.rectangle(rect_img, welderRectangle[0], welderRectangle[1], (255,0,0), -1)
+        masked_data = cv2.bitwise_and(grayCopy, grayCopy, mask=rect_img)
+        masked_data = applyQuant(masked_data, clt)
+
+        edges = cv2.Canny(masked_data, 5, 100)
+
         cv2.ellipse(thresh,ellipse,(255,0,0),2)
 
         hull = cv2.convexHull(contours[0])
 
         cv2.drawContours(thresh, contours, -1, (255,0,0), -2)
         cv2.drawContours(thresh, hull, -1, (255,0,0), -2)
+        # cv2.imwrite('welderMask%d.png' %frameNum ,masked_data)
+        # masked_data = cv2.bitwise_not(masked_data)
+        cv2.imshow("Welder Mask", masked_data)
 
     res = cv2.add(thresh, grayCopy)
+    res = cv2.add(res, edges)
+    imageEdges, welderAngles = detectLines(edges)
+
+    res = cv2.add(res, imageEdges)
+
     cv2.imshow("Contour", res)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         return False
 
-    res = {"beadLocation" : beadLocation,\
-           "welderOffEvent" : welderOffEvent,\
-           "frameShiftEvent" : frameShiftEvent,\
-           "welderStopEvent" : welderStopEvent}
+    res = {"welderAngles" : welderAngles,\
+           "beadLocation" : beadLocation}
     return res
+
 
 def main():
     cap = cv2.VideoCapture('sample_weld_video.mp4')    
@@ -268,12 +201,10 @@ def main():
     frame1 = preProcess(frame1)
     clt = grayQuantize(frame1, 4)
 
-
-    # previous = frame1
-
     while(cap.isOpened()):
         ret, current = cap.read()
         results = videoAnalysis(previous, current, clt)
+        print(results)
         previous = current
 
     cap.release()
