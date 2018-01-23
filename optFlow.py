@@ -15,7 +15,7 @@ from __future__ import print_function
 
 import numpy as np
 import cv2 as cv
-import video
+from OpticalFlow import video
 
 trailAvg = -30
 avgSize = 10
@@ -76,7 +76,6 @@ if __name__ == '__main__':
 
     prev = prev[optMinY:optMaxY, optMinX:optMaxX]
 
-
     prevgray = preProcess(prev)
     show_hsv = False
     show_glitch = False
@@ -86,10 +85,13 @@ if __name__ == '__main__':
         ret, img = cam.read()
         gray = preProcess(img)
         gray = gray[optMinY:optMaxY, optMinX:optMaxX]
+        unProcessed = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+        unProcessed = unProcessed[optMinY:optMaxY, optMinX:optMaxX]
         flow = cv.calcOpticalFlowFarneback(prevgray, gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
         prevgray = gray
         vis, trailAvg = draw_flow(gray, flow, trailAvg)
-        cv.imshow('flow', vis)
+        print(vis.shape)
+        cv.imshow('flow', np.hstack((vis, unProcessed)))
         if show_hsv:
             cv.imshow('flow HSV', draw_hsv(flow))
         if show_glitch:
