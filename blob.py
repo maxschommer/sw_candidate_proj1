@@ -7,6 +7,9 @@ from sklearn.cluster import MiniBatchKMeans
 sift = cv2.xfeatures2d.SIFT_create()
 MIN_MATCH_COUNT = 5
 
+trailAvg = -30
+avgSize = 10
+
 def mse(imageA, imageB):
     # the 'Mean Squared Error' between the two images is the
     # sum of the squared difference between the two images;
@@ -28,7 +31,7 @@ def detectLines(imageEdges):
     welderAngle = []
     for lineVals in lines:
         r, theta = lineVals[0]
-        welderAngle.append(theta)
+        welderAngle.append(theta - np.pi/2)
         # if ((np.abs(theta) < angleThreshold) |\
         #  ((np.abs(theta) < np.pi/2 + angleThreshold) & (np.abs(theta) > np.pi/2 - angleThreshold)) |\
         #  ((np.abs(theta) < 3*np.pi/2 + angleThreshold) & (np.abs(theta) > 8*np.pi/2 - angleThreshold))):
@@ -149,116 +152,158 @@ def applyQuant(image, clt):
 def preProcess(image):
     res = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     # print(res.mean())
-    # create a CLAHE object (Arguments are optional).
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     res = clahe.apply(res)
-    
     # gray = sharpen(gray)
     return res
+
+def preProcessOptFlow(image):
+    res = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # print(res.mean())
+    res = cv2.equalizeHist(res)
+    # gray = sharpen(gray)
+    return res
+
+def analyzeFlow(img, flow, step=16):
+    global trailAvg
+    h, w = img.shape[:2]
+    y, x = np.mgrid[step/2:h:step, step/2:w:step].reshape(2,-1).astype(int)
+    fx, fy = flow[y,x].T
+    fxSort = np.sort(fx)
+    trailAvg = trailAvg * (avgSize - 1)/avgSize + np.mean(fxSort[0:10])/avgSize
+
+def videoAnalysis(previous, current, clt):
+    optMinX = 0
+    optMaxX = 700
+    optMinY = 0
+    optMaxY = 2000
+
+    contourArea = []
+    welderOffEvent = False
+    frameShiftEvent = False
+
+    height,width, depth = np.shape(current)
+
+    prevOpt = preProcessOptFlow(previous[optMinY:optMaxY, optMinX:optMaxX])
+    currentOpt = preProcessOptFlow(current[optMinY:optMaxY, optMinX:optMaxX])
+    flow = cv2.calcOpticalFlowFarneback(prevOpt, currentOpt, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+    analyzeFlow(currentOpt, flow)
+
+    try:
+        gray = preProcess(current)
+        previous = preProcess(previous)
+        # print(gray.mean())
+    except Exception as e:
+        print("Error")
+        return False
+
+    grayCopy = gray.copy()
+    # grayCopy = applyQuant(grayCopy, clt)
+
+    kernel = np.ones((20,20),np.float32)/400
+    gray = cv2.filter2D(gray,-1,kernel)
+
+    next = gray
+
+    imgDiff = mse(previous, next)
+    if imgDiff > 350:
+        frameShiftEvent = True
+
+    imgDiff2 = ssim(previous, next)
+    if imgDiff2 < .95:
+        # print(imgDiff2)
+        pass
+
+    ret,thresh = cv2.threshold(gray, 140,255,cv2.THRESH_BINARY)
+    threshcopy = thresh
+
+    edges = cv2.Canny(grayCopy, 5, 100)
+
+    imTemp, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours = sorted(contours, key = cv2.contourArea, reverse = True)[:1]
+
+    beadLocation = None
+
+    if contours:
+        M = cv2.moments(contours[0])
+        cX = int(M["m10"] / M["m00"])
+        cY = int(M["m01"] / M["m00"])
+
+        contourArea.append(int(M["m00"]))
+        if contourArea[-1] < 5000:
+            welderOffEvent = True
+
+        lineLength = 40
+
+        cv2.line(thresh,(cX,cY + lineLength),(cX,cY - lineLength),(255,0,0),1)
+        cv2.line(thresh,(cX + lineLength, cY),(cX - lineLength, cY),(255,0,0),1)
+
+        ellipse = cv2.fitEllipse(contours[0])
+        beadLocation = np.asarray(ellipse[0])
+
+        welderRectangleCorner = beadLocation + np.asarray((ellipse[1][1]*0, 0))
+        welderRectangle = np.asarray((welderRectangleCorner, np.asarray((600, -200)) + welderRectangleCorner))
+        welderRectangle = welderRectangle.astype(np.int64)
+        welderRectangle = tuple(map(tuple, welderRectangle))
+
+        # print(welderRectangle)
+
+        rect_img = np.zeros((height,width), np.uint8)
+        cv2.rectangle(rect_img, welderRectangle[0], welderRectangle[1], (255,0,0), -1)
+        masked_data = cv2.bitwise_and(grayCopy, grayCopy, mask=rect_img)
+        masked_data = applyQuant(masked_data, clt)
+        # siftMatch(masked_data)
+        # laplacian = cv2.Laplacian(masked_data, cv2.CV_64F)
+        # sobelx = cv2.Sobel(masked_data,cv2.CV_64F,0,1,ksize=5)
+
+        edges = cv2.Canny(masked_data, 5, 100)
+
+        cv2.ellipse(thresh,ellipse,(255,0,0),2)
+
+        hull = cv2.convexHull(contours[0])
+
+        cv2.drawContours(thresh, contours, -1, (255,0,0), -2)
+        cv2.drawContours(thresh, hull, -1, (255,0,0), -2)
+        # cv2.imwrite('welderMask%d.png' %frameNum ,masked_data)
+        # masked_data = cv2.bitwise_not(masked_data)
+        cv2.imshow("Welder Mask", masked_data)
+
+    res = cv2.add(thresh, grayCopy)
+    res = cv2.add(res, edges)
+    imageEdges, welderAngles = detectLines(edges)
+
+    res = cv2.add(res, imageEdges)
+
+    cv2.imshow("Contour", res)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        return False
+
+    res = {"welderAngles" : welderAngles,\
+           "beadLocation" : beadLocation,\
+           "welderOffEvent" : welderOffEvent,\
+           "frameShiftEvent" : frameShiftEvent}
+
 
 def main():
     cap = cv2.VideoCapture('sample_weld_video.mp4')
 
-    contourArea = []
+    
 
     frameNum = 0
 
     ret, frame1 = cap.read()
+    previous = frame1.copy()
     frame1 = preProcess(frame1)
     clt = grayQuantize(frame1, 4)
 
-    height,width = frame1.shape
-    prvs = frame1
+
+    # previous = frame1
 
     while(cap.isOpened()):
-
-        frameNum += 1
-        ret, frame = cap.read()
-        try:
-            gray = preProcess(frame)
-            # print(gray.mean())
-        except Exception as e:
-            print("Error")
-            break
-
-        grayCopy = gray.copy()
-        # grayCopy = applyQuant(grayCopy, clt)
-
-        kernel = np.ones((20,20),np.float32)/400
-        gray = cv2.filter2D(gray,-1,kernel)
-
-        next = gray
-
-        imgDiff = mse(prvs, next)
-        if imgDiff > 300:
-            # print(imgDiff)
-            pass
-
-        imgDiff2 = ssim(prvs, next)
-        if imgDiff2 < .95:
-            # print(imgDiff2)
-            pass
-
-        ret,thresh = cv2.threshold(gray, 140,255,cv2.THRESH_BINARY)
-        threshcopy = thresh
-
-        edges = cv2.Canny(grayCopy, 5, 100)
-
-        imTemp, contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key = cv2.contourArea, reverse = True)[:1]
-
-        if contours:
-            M = cv2.moments(contours[0])
-            cX = int(M["m10"] / M["m00"])
-            cY = int(M["m01"] / M["m00"])
-
-            contourArea.append(int(M["m00"]))
-            lineLength = 40
-
-            cv2.line(thresh,(cX,cY + lineLength),(cX,cY - lineLength),(255,0,0),1)
-            cv2.line(thresh,(cX + lineLength, cY),(cX - lineLength, cY),(255,0,0),1)
-
-            ellipse = cv2.fitEllipse(contours[0])
-
-            welderRectangleCorner = np.asarray(ellipse[0])+np.asarray((ellipse[1][1]*0, 0))
-            welderRectangle = np.asarray((welderRectangleCorner, np.asarray((600, -200)) + welderRectangleCorner))
-            welderRectangle = welderRectangle.astype(np.int64)
-            welderRectangle = tuple(map(tuple, welderRectangle))
-
-            # print(welderRectangle)
-
-            rect_img = np.zeros((height,width), np.uint8)
-            cv2.rectangle(rect_img, welderRectangle[0], welderRectangle[1], (255,0,0), -1)
-            masked_data = cv2.bitwise_and(grayCopy, grayCopy, mask=rect_img)
-            masked_data = applyQuant(masked_data, clt)
-            # siftMatch(masked_data)
-            # laplacian = cv2.Laplacian(masked_data, cv2.CV_64F)
-            # sobelx = cv2.Sobel(masked_data,cv2.CV_64F,0,1,ksize=5)
-
-            edges = cv2.Canny(masked_data, 5, 100)
-
-            cv2.ellipse(thresh,ellipse,(255,0,0),2)
-
-            hull = cv2.convexHull(contours[0])
-
-            cv2.drawContours(thresh, contours, -1, (255,0,0), -2)
-            cv2.drawContours(thresh, hull, -1, (255,0,0), -2)
-            # cv2.imwrite('welderMask%d.png' %frameNum ,masked_data)
-            # masked_data = cv2.bitwise_not(masked_data)
-            cv2.imshow("Welder Mask", masked_data)
-
-        res = cv2.add(thresh, grayCopy)
-        res = cv2.add(res, edges)
-        imageEdges, welderAngle = detectLines(edges)
-        res = cv2.add(res, imageEdges)
-
-        cv2.imshow("Contour", res)
-
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-        prvs = next
+        ret, current = cap.read()
+        results = videoAnalysis(previous, current, clt)
+        previous = current
 
     cap.release()
     cv2.destroyAllWindows()
